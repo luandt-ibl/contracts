@@ -4,15 +4,24 @@ import { ProxyStorage } from "../../common/misc/ProxyStorage.sol";
 import { Registry } from "../../common/Registry.sol";
 import { RootChain } from "../RootChain.sol";
 
+contract ExitsDataStructure {
+  struct Input {
+    address signer;
+  }
 
-contract WithdrawManagerHeader {
   struct PlasmaExit {
     address owner;
     address token;
     uint256 receiptAmountOrNFTId;
+    bytes32 txHash;
     bool burnt;
+    address predicate;
+    // Mapping from age of input to Input
+    mapping(uint256 => Input) inputs;
   }
+}
 
+contract WithdrawManagerHeader is ExitsDataStructure {
   event Withdraw(
     address indexed user,
     address indexed token,
@@ -21,10 +30,18 @@ contract WithdrawManagerHeader {
 
   event ExitStarted(
     address indexed exitor,
-    uint256 indexed utxoPos,
+    uint256 indexed exitId,
     address indexed token,
     uint256 amount
   );
+
+  event ExitUpdated(
+    uint256 indexed exitId,
+    uint256 indexed age,
+    address signer
+  );
+
+  event ExitCancelled(uint256 indexed exitId);
 }
 
 contract WithdrawManagerStorage is ProxyStorage, WithdrawManagerHeader {

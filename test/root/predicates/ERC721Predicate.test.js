@@ -33,7 +33,7 @@ const web3Child = new web3.constructor(
 )
 
 chai.use(chaiAsPromised).should()
-let contracts, childContracts
+let contracts, childContracts, start
 
 contract('ERC721Predicate', async function(accounts) {
   const tokenId = '0x117'
@@ -43,7 +43,9 @@ contract('ERC721Predicate', async function(accounts) {
   describe('startExit', async function() {
     beforeEach(async function() {
       contracts = await deployer.freshDeploy()
+      contracts.ERC721Predicate = await deployer.deployErc721Predicate()
       childContracts = await deployer.initializeChildChain(accounts[0], { erc721: true })
+      start = 0
     })
 
     it('reference: incomingTransfer - exitTx: burn', async function() {
@@ -56,6 +58,26 @@ contract('ERC721Predicate', async function(accounts) {
       )
 
       const { receipt } = await childContracts.childErc721.transferFrom(other, user, tokenId, { from: other })
+      const { block, blockProof, headerNumber, reference } = await init(contracts.rootChain, receipt, accounts)
+
+      const { receipt: r } = await childContracts.childErc721.withdraw(tokenId)
+      let exitTx = await web3Child.eth.getTransaction(r.transactionHash)
+      exitTx = await buildInFlight(exitTx)
+
+      const startExitTx = await startExit(headerNumber, blockProof, block.number, block.timestamp, reference, 1, /* logIndex */ exitTx)
+      const logs = logDecoder.decodeLogs(startExitTx.receipt.rawLogs)
+      // console.log(startExitTx, logs)
+      const log = logs[1]
+      log.event.should.equal('ExitStarted')
+      expect(log.args).to.include({
+        exitor: user,
+        token: childContracts.rootERC721.address
+      })
+      assertBigNumberEquality(log.args.amount, tokenId)
+    })
+
+    it('reference: Deposit - exitTx: burn', async function() {
+      const { receipt } = await childContracts.childChain.depositTokens(childContracts.rootERC721.address, user, tokenId, '1' /* mock depositBlockId */)
       const { block, blockProof, headerNumber, reference } = await init(contracts.rootChain, receipt, accounts)
 
       const { receipt: r } = await childContracts.childErc721.withdraw(tokenId)
@@ -104,6 +126,10 @@ contract('ERC721Predicate', async function(accounts) {
       assertBigNumberEquality(log.args.amount, tokenId)
     })
   })
+
+  describe('verifyDeprecation', async function() {
+    it('write test')
+  })
 })
 
 async function depositErc721(depositManager, childChain, rootERC721, user, tokenId) {
@@ -135,15 +161,12 @@ async function init(rootChain, receipt, accounts) {
   const headers = [blockHeader]
   const tree = new MerkleTree(headers)
   const root = utils.bufferToHex(tree.getRoot())
-  const start = event.tx.blockNumber
   const end = event.tx.blockNumber
   const blockProof = await tree.getProof(blockHeader)
+  start = Math.min(start, end)
   tree
     .verify(blockHeader, event.block.number - start, tree.getRoot(), blockProof)
     .should.equal(true)
-  const payload = buildSubmitHeaderBlockPaylod(accounts[0], 0, start - 1)
-  await rootChain.submitHeaderBlock(payload.vote, payload.sigs, payload.extraData)
-
   const { vote, sigs, extraData } = buildSubmitHeaderBlockPaylod(accounts[0], start, end, root)
   const submitHeaderBlock = await rootChain.submitHeaderBlock(vote, sigs, extraData)
 
@@ -153,6 +176,7 @@ async function init(rootChain, receipt, accounts) {
   assert.isTrue(verifyReceiptProof(receiptProof), 'Receipt proof must be valid (failed in js)')
 
   const NewHeaderBlockEvent = submitHeaderBlock.logs.find(log => log.event === 'NewHeaderBlock')
+  start = end + 1
   return { block: event.block, blockProof, headerNumber: NewHeaderBlockEvent.args.headerBlockId, reference: await build(event) }
 }
 
@@ -169,10 +193,9 @@ function startExit(headerNumber, blockProof, blockNumber, blockTimestamp, refere
         utils.bufferToHex(reference.receipt),
         utils.bufferToHex(rlp.encode(reference.receiptParentNodes)),
         utils.bufferToHex(rlp.encode(reference.path)), // branch mask,
-        logIndex,
-        utils.bufferToHex(exitTx)
+        logIndex
       ])
-    )
-    // registry
+    ),
+    utils.bufferToHex(exitTx)
   )
 }
